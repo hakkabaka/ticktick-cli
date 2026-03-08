@@ -1,9 +1,10 @@
-use crate::ticktick::{ProjectSummary, TaskSummary};
+use crate::ticktick::{ApiClient, ProjectSummary, Task, TaskSummary};
 
 #[derive(Debug)]
 pub enum CurrentScreen {
     ProjectsView,
     ProjectView,
+    TicketView,
 }
 
 #[derive(Debug)]
@@ -19,6 +20,8 @@ pub struct App {
     pub selected_project: usize,
     pub selected_task: usize,
     pub projects: Vec<ProjectWithTasks>,
+    pub viewed_ticket: Option<Task>,
+    pub last_error: Option<String>,
 }
 
 impl App {
@@ -29,6 +32,8 @@ impl App {
             selected_project: 0,
             selected_task: 0,
             projects,
+            viewed_ticket: None,
+            last_error: None,
         }
     }
 
@@ -50,16 +55,37 @@ impl App {
         };
     }
 
-    pub fn open_project_tickets(&mut self) {
+    pub async fn open_project_tickets(&mut self, client: &ApiClient) {
         if self.projects.is_empty() {
             return;
         }
+
+        let project_id = self.projects[self.selected_project].project.id.clone();
+        match client.get_project_data(&project_id).await {
+            Ok(data) => {
+                self.projects[self.selected_project].tasks = data.tasks;
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.last_error = Some(format!("Failed to load project tickets: {err}"));
+            }
+        }
+
         self.selected_task = 0;
+        self.viewed_ticket = None;
         self.current_screen = CurrentScreen::ProjectView;
     }
 
-    pub fn back_to_projects(&mut self) {
-        self.current_screen = CurrentScreen::ProjectsView;
+    pub fn back(&mut self) {
+        match self.current_screen {
+            CurrentScreen::ProjectsView => {}
+            CurrentScreen::ProjectView => self.current_screen = CurrentScreen::ProjectsView,
+            CurrentScreen::TicketView => {
+                self.current_screen = CurrentScreen::ProjectView;
+                self.viewed_ticket = None;
+            }
+        }
+        self.last_error = None;
     }
 
     pub fn next_task(&mut self) {
@@ -86,6 +112,29 @@ impl App {
 
     pub fn selected_project(&self) -> Option<&ProjectWithTasks> {
         self.projects.get(self.selected_project)
+    }
+
+    pub async fn open_ticket_details(&mut self, client: &ApiClient) {
+        let Some(project) = self.projects.get(self.selected_project) else {
+            return;
+        };
+        let project_id = project.project.id.clone();
+        let Some(task) = project.tasks.get(self.selected_task) else {
+            return;
+        };
+        let task_id = task.id.clone();
+
+        match client.get_task_by_id(&project_id, &task_id).await {
+            Ok(detail) => {
+                self.viewed_ticket = Some(detail);
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.viewed_ticket = None;
+                self.last_error = Some(format!("Failed to load ticket details: {err}"));
+            }
+        }
+        self.current_screen = CurrentScreen::TicketView;
     }
 
     pub fn quit(&mut self) {
